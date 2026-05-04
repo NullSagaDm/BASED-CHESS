@@ -1,0 +1,30 @@
+{
+  "name": "@based-chess/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@base-org/account": "^2.1.1",
+    "@based-chess/shared": "0.1.0",
+    "@tanstack/react-query": "^5.74.7",
+    "chess.js": "^1.2.0",
+    "lucide-react": "^0.507.0",
+    "react": "^18.3.1",
+    "react-chessboard": "^4.7.3",
+    "react-dom": "^18.3.1",
+    "viem": "^2.28.1",
+    "wagmi": "^2.15.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.20",
+    "@types/react-dom": "^18.3.6",
+    "@vitejs/plugin-react": "^4.4.1",
+    "vite": "^6.3.4"
+  }
+}

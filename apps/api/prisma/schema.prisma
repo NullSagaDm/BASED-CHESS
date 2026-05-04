@@ -1,0 +1,144 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String           @id @default(cuid())
+  primaryWallet  String           @unique
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  wallets        WalletIdentity[]
+  games          Game[]
+  mintedNfts     MintedNft[]
+  stats          UserStats?
+}
+
+model WalletIdentity {
+  id            String   @id @default(cuid())
+  walletAddress String   @unique
+  userId        String
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model AuthNonce {
+  id        String    @id @default(cuid())
+  nonce     String    @unique
+  usedAt    DateTime?
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+}
+
+model Season {
+  id        String      @id @default(cuid())
+  index     Int         @unique
+  label     String      @unique
+  startsAt  DateTime
+  endsAt    DateTime
+  games     Game[]
+  mintedNfts MintedNft[]
+}
+
+model Game {
+  id              String               @id @default(cuid())
+  userId          String
+  walletAddress   String
+  opponentType    String               @default("bot")
+  difficulty      String
+  status          String               @default("active")
+  result          String?
+  fen             String
+  pgn             String?
+  movesJson       String               @default("[]")
+  userMoveCount   Int                  @default(0)
+  plyCount        Int                  @default(0)
+  durationSeconds Int?
+  startedAt       DateTime             @default(now())
+  lastMoveAt      DateTime             @default(now())
+  completedAt     DateTime?
+  seasonId        String
+  integrityHash   String?
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  season          Season               @relation(fields: [seasonId], references: [id])
+  moves           GameMove[]
+  mintAuth        MintAuthorization?
+  mintedNft       MintedNft?
+
+  @@index([userId, startedAt])
+  @@index([difficulty, status, result])
+  @@index([seasonId, difficulty, result])
+  @@index([lastMoveAt, status])
+}
+
+model GameMove {
+  id        String   @id @default(cuid())
+  gameId    String
+  ply       Int
+  side      String
+  san       String
+  from      String
+  to        String
+  promotion String?
+  fenAfter  String
+  createdAt DateTime @default(now())
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, ply])
+  @@index([gameId])
+}
+
+model MintAuthorization {
+  id            String   @id @default(cuid())
+  gameId        String   @unique
+  walletAddress String
+  gameIdHash    String   @unique
+  tokenUri      String
+  deadline      DateTime
+  signature     String
+  createdAt     DateTime @default(now())
+  game          Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+}
+
+model MintedNft {
+  id            String   @id @default(cuid())
+  gameId        String   @unique
+  userId        String
+  walletAddress String
+  seasonId      String
+  result        String
+  difficulty    String
+  rarity        String
+  tokenId       String?
+  txHash        String   @unique
+  tokenUri      String
+  imageUrl      String
+  metadataJson  String
+  mintedAt      DateTime @default(now())
+  game          Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  season        Season   @relation(fields: [seasonId], references: [id])
+
+  @@index([userId, mintedAt])
+  @@index([seasonId, difficulty])
+}
+
+model UserStats {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  totalGames  Int      @default(0)
+  wins        Int      @default(0)
+  losses      Int      @default(0)
+  draws       Int      @default(0)
+  xp          Float    @default(0)
+  bestStreak  Int      @default(0)
+  mintedNfts  Int      @default(0)
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

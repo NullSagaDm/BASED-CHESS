@@ -1,0 +1,133 @@
+﻿Folder PATH listing
+Volume serial number is A43C-458C
+C:\USERS\USER\DOCUMENTS\CODEX\2026-05-01\BASED-CHESS-GITHUB-READY-20260504-124302
+|   .env.example
+|   .gitignore
+|   package-lock.json
+|   package.json
+|   README.md
+|   tsconfig.base.json
+|   
++---.github
+|   \---workflows
+|           ci.yml
+|           
++---apps
+|   +---api
+|   |   |   package.json
+|   |   |   tsconfig.json
+|   |   |   
+|   |   +---assets
+|   |   |   \---rarity
+|   |   |           common-artwork.jpg
+|   |   |           epic-artwork.jpg
+|   |   |           legendary-artwork.jpg
+|   |   |           rare-artwork.jpg
+|   |   |           
+|   |   +---prisma
+|   |   |   |   schema.prisma
+|   |   |   |   seed.ts
+|   |   |   |   
+|   |   |   \---migrations
+|   |   |       |   migration_lock.toml
+|   |   |       |   
+|   |   |       +---0001_init
+|   |   |       |       migration.sql
+|   |   |       |       
+|   |   |       +---0002_loss_xp_float
+|   |   |       |       migration.sql
+|   |   |       |       
+|   |   |       \---0003_draw_results
+|   |   |               migration.sql
+|   |   |               
+|   |   \---src
+|   |       |   auth.ts
+|   |       |   db.ts
+|   |       |   domain.ts
+|   |       |   env.ts
+|   |       |   index.ts
+|   |       |   
+|   |       +---jobs
+|   |       |       closeInactiveGames.ts
+|   |       |       
+|   |       +---routes
+|   |       |       assets.ts
+|   |       |       auth.ts
+|   |       |       games.ts
+|   |       |       leaderboards.ts
+|   |       |       me.ts
+|   |       |       mints.ts
+|   |       |       
+|   |       +---services
+|   |       |       analysisService.ts
+|   |       |       artService.test.ts
+|   |       |       artService.ts
+|   |       |       chessBot.ts
+|   |       |       gameService.test.ts
+|   |       |       gameService.ts
+|   |       |       integrityService.ts
+|   |       |       leaderboardService.ts
+|   |       |       nftService.test.ts
+|   |       |       nftService.ts
+|   |       |       seasonService.ts
+|   |       |       shareService.ts
+|   |       |       statsService.ts
+|   |       |       userService.ts
+|   |       |       
+|   |       \---utils
+|   \---web
+|       |   index.html
+|       |   package.json
+|       |   tsconfig.json
+|       |   vite.config.ts
+|       |   
+|       +---public
+|       |   |   site.webmanifest
+|       |   |   
+|       |   \---brand
+|       |           based-chess-logo.jpg
+|       |           
+|       \---src
+|           |   App.tsx
+|           |   main.tsx
+|           |   styles.css
+|           |   types.ts
+|           |   
+|           +---api
+|           |       client.ts
+|           |       
+|           +---components
+|           +---config
+|           |       env.ts
+|           |       wagmi.ts
+|           |       
+|           +---hooks
+|           \---utils
+|                   format.ts
+|                   
++---contracts
+|   |   foundry.toml
+|   |   remappings.txt
+|   |   
+|   +---script
+|   |       DeployBasedChessResults.s.sol
+|   |       
+|   +---src
+|   |       BasedChessResults.sol
+|   |       
+|   \---test
+\---packages
+    \---shared
+        |   package.json
+        |   tsconfig.json
+        |   
+        \---src
+                contract.ts
+                index.ts
+                levels.ts
+                nft.ts
+                seasons.test.ts
+                seasons.ts
+                stats.test.ts
+                stats.ts
+                

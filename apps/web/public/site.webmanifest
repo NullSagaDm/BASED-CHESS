@@ -1,0 +1,17 @@
+{
+  "name": "Based Chess",
+  "short_name": "Based Chess",
+  "description": "A mobile-first Base App chess mini app.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f9ff",
+  "theme_color": "#0052ff",
+  "icons": [
+    {
+      "src": "/brand/based-chess-logo.jpg",
+      "sizes": "1254x1181",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}

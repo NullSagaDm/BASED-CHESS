@@ -1,0 +1,1094 @@
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Chessboard } from "react-chessboard";
+import { Chess, type Square as ChessSquare } from "chess.js";
+import { createSiweMessage } from "viem/siwe";
+import { parseEventLogs } from "viem";
+import { useAccount, useConnect, useDisconnect, usePublicClient, useSignMessage, useWriteContract } from "wagmi";
+import {
+  Award,
+  BarChart3,
+  Castle,
+  Check,
+  ChevronRight,
+  Clock,
+  Crown,
+  Flame,
+  Gamepad2,
+  Gem,
+  Home,
+  Medal,
+  Shield,
+  Swords,
+  Trophy,
+  User,
+  Wallet,
+  X
+} from "lucide-react";
+import {
+  DIFFICULTIES,
+  difficultyColors,
+  difficultyLabels,
+  formatXp,
+  rarityLabels,
+  resultLabel,
+  resultNftAbi,
+  type Difficulty,
+  type GameResult,
+  type Rarity
+} from "@based-chess/shared";
+import { api, setAuthToken } from "./api/client";
+import { chain } from "./config/wagmi";
+import { env } from "./config/env";
+import type { Analysis, ApiGame, LeaderboardResponse, MeResponse, MintPreview, Profile } from "./types";
+import { absoluteApiUrl, compactAddress, formatDuration } from "./utils/format";
+
+type Tab = "home" | "play" | "leaderboards" | "profile";
+
+const metricLabels = {
+  "most-wins": "Most Wins",
+  "fastest-wins": "Fastest Wins",
+  "lowest-move-count": "Lowest Moves"
+} as const;
+
+const resultFilterLabels = {
+  all: "All",
+  win: "Win",
+  loss: "Loss",
+  draw: "Draw"
+} as const;
+
+const titleLadder = [
+  { title: "Rookie", range: "0-24 XP" },
+  { title: "Tactical Knight", range: "25-99 XP" },
+  { title: "Base Master", range: "100-249 XP" },
+  { title: "Base Grandmaster", range: "250-499 XP" },
+  { title: "Base God", range: "500+ XP" }
+] as const;
+
+const brandLogoSrc = "/brand/based-chess-logo.jpg";
+
+function useBoardWidth() {
+  const [width, setWidth] = useState(() => Math.min(window.innerWidth - 32, 430));
+  useEffect(() => {
+    const onResize = () => setWidth(Math.min(window.innerWidth - 32, 430));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return width;
+}
+
+function useDisplayedDuration(game: ApiGame) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (game.status !== "active") return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [game.id, game.status]);
+
+  if (game.durationSeconds !== null) return game.durationSeconds;
+  return Math.max(0, Math.floor((now - new Date(game.startedAt).getTime()) / 1_000));
+}
+
+function formatSeasonCountdown(endsAt: string, now: number) {
+  const remainingMs = new Date(endsAt).getTime() - now;
+  if (!Number.isFinite(remainingMs)) return "Season end unavailable";
+  if (remainingMs <= 0) return "Season ended";
+
+  const totalMinutes = Math.ceil(remainingMs / 60_000);
+  const days = Math.floor(totalMinutes / 1_440);
+  const hours = Math.floor((totalMinutes % 1_440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) return `Season ends in ${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `Season ends in ${hours}h ${minutes}m`;
+  return `Season ends in ${minutes}m`;
+}
+
+function useSeasonCountdown(endsAt?: string) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!endsAt) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, [endsAt]);
+
+  return endsAt ? formatSeasonCountdown(endsAt, now) : null;
+}
+
+function RoyalPiece({
+  kind,
+  color,
+  squareWidth
+}: {
+  kind: "king" | "queen";
+  color: "white" | "black";
+  squareWidth: number;
+}) {
+  const light = color === "white";
+  const fill = light ? "#f8fbff" : "#111827";
+  const stroke = light ? "#0b1426" : "#f8fbff";
+  const accent = light ? "#dbe8ff" : "#23345f";
+
+  return (
+    <svg width={squareWidth} height={squareWidth} viewBox="0 0 100 100" aria-hidden="true" className="royal-piece">
+      {kind === "king" ? (
+        <>
+          <path d="M50 9 V27 M41 18 H59" stroke={stroke} strokeWidth="5" strokeLinecap="round" />
+          <circle cx="50" cy="35" r="9" fill={fill} stroke={stroke} strokeWidth="4" />
+          <path
+            d="M36 47 C29 53 27 65 34 72 H66 C73 65 71 53 64 47 C59 53 41 53 36 47Z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="4"
+            strokeLinejoin="round"
+          />
+          <path d="M33 72 H67 L72 83 H28 Z" fill={accent} stroke={stroke} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M24 87 H76" stroke={stroke} strokeWidth="6" strokeLinecap="round" />
+        </>
+      ) : (
+        <>
+          <circle cx="28" cy="24" r="5" fill={fill} stroke={stroke} strokeWidth="3" />
+          <circle cx="42" cy="16" r="5" fill={fill} stroke={stroke} strokeWidth="3" />
+          <circle cx="58" cy="16" r="5" fill={fill} stroke={stroke} strokeWidth="3" />
+          <circle cx="72" cy="24" r="5" fill={fill} stroke={stroke} strokeWidth="3" />
+          <path
+            d="M27 32 L37 54 L44 30 L50 56 L56 30 L63 54 L73 32 L66 66 H34 Z"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="4"
+            strokeLinejoin="round"
+          />
+          <path d="M34 66 H66 L71 82 H29 Z" fill={accent} stroke={stroke} strokeWidth="4" strokeLinejoin="round" />
+          <path d="M24 87 H76" stroke={stroke} strokeWidth="6" strokeLinecap="round" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+const customRoyalPieces = {
+  wK: ({ squareWidth }: { squareWidth: number }) => <RoyalPiece kind="king" color="white" squareWidth={squareWidth} />,
+  bK: ({ squareWidth }: { squareWidth: number }) => <RoyalPiece kind="king" color="black" squareWidth={squareWidth} />,
+  wQ: ({ squareWidth }: { squareWidth: number }) => <RoyalPiece kind="queen" color="white" squareWidth={squareWidth} />,
+  bQ: ({ squareWidth }: { squareWidth: number }) => <RoyalPiece kind="queen" color="black" squareWidth={squareWidth} />
+};
+
+function findCheckedKingSquare(fen: string) {
+  const chess = new Chess(fen);
+  if (!chess.isCheck()) return null;
+  const checkedColor = chess.turn();
+  const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+  for (const [rankIndex, rank] of chess.board().entries()) {
+    for (const [fileIndex, piece] of rank.entries()) {
+      if (piece?.type === "k" && piece.color === checkedColor) {
+        return {
+          square: `${files[fileIndex]}${8 - rankIndex}`,
+          color: checkedColor
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function Stat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="stat">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ConnectScreen({ onAuthed }: { onAuthed: () => void }) {
+  const { connectors, connectAsync, isPending } = useConnect();
+  const { signMessageAsync } = useSignMessage();
+  const { disconnect } = useDisconnect();
+  const [error, setError] = useState<string | null>(null);
+
+  async function signIn(connectorId: string) {
+    setError(null);
+    const connector = connectors.find((item) => item.uid === connectorId || item.id === connectorId);
+    if (!connector) return;
+    try {
+      const connection = await connectAsync({ connector, chainId: chain.id });
+      const address = connection.accounts[0];
+      const { nonce } = await api.nonce();
+      const message = createSiweMessage({
+        address,
+        chainId: chain.id,
+        domain: window.location.host,
+        nonce,
+        uri: window.location.origin,
+        version: "1",
+        statement: "Sign in to play Based Chess."
+      });
+      const signature = await signMessageAsync({ message });
+      const session = await api.verify({ address, message, signature });
+      setAuthToken(session.token);
+      onAuthed();
+    } catch (event) {
+      disconnect();
+      setError(event instanceof Error ? event.message : "Wallet sign-in failed");
+    }
+  }
+
+  async function devAuth() {
+    setError(null);
+    try {
+      const session = await api.devAuth();
+      setAuthToken(session.token);
+      onAuthed();
+    } catch (event) {
+      setError(event instanceof Error ? event.message : "Temporary login failed");
+    }
+  }
+
+  return (
+    <main className="shell connect-shell">
+      <section className="brand-panel">
+        <img className="brand-logo brand-logo-large" src={brandLogoSrc} alt="Based Chess knight logo" />
+        <p className="eyebrow">Base App chess</p>
+        <h1>Based Chess</h1>
+        <p className="lead">Play the bot, climb clean leaderboards, and mint one result NFT per completed game.</p>
+      </section>
+      <section className="surface auth-panel">
+        <h2>Connect wallet</h2>
+        <div className="connector-list">
+          {connectors.map((connector) => (
+            <button className="primary-button" key={connector.uid} disabled={isPending} onClick={() => signIn(connector.uid)}>
+              <Wallet size={18} />
+              {connector.name}
+              <ChevronRight size={18} />
+            </button>
+          ))}
+          {env.enableDevAuth ? (
+            <button className="ghost-button" disabled={isPending} onClick={devAuth}>
+              <Shield size={18} />
+              Temporary local access
+            </button>
+          ) : null}
+        </div>
+        {error ? <p className="error-text">{error}</p> : null}
+      </section>
+    </main>
+  );
+}
+
+function DifficultyGrid({ onStart, busy }: { onStart: (difficulty: Difficulty) => void; busy: boolean }) {
+  const icons = {
+    easy: Shield,
+    medium: Swords,
+    hard: Castle,
+    "very-hard": Crown
+  };
+
+  return (
+    <div className="difficulty-grid">
+      {DIFFICULTIES.map((difficulty) => {
+        const Icon = icons[difficulty];
+        return (
+          <button
+            className={`difficulty-card ${difficulty}`}
+            key={difficulty}
+            style={{ "--difficulty-color": difficultyColors[difficulty] } as CSSProperties}
+            disabled={busy}
+            onClick={() => onStart(difficulty)}
+          >
+            <Icon size={22} />
+            <span>{difficultyLabels[difficulty]}</span>
+            <small>{difficulty === "easy" ? "Common" : difficulty === "medium" ? "Rare" : difficulty === "hard" ? "Epic" : "Legendary"}</small>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function HomeScreen({
+  me,
+  onStart,
+  busy
+}: {
+  me: MeResponse;
+  onStart: (difficulty: Difficulty) => void;
+  busy: boolean;
+}) {
+  const [showTitleLadder, setShowTitleLadder] = useState(false);
+
+  return (
+    <div className="screen">
+      <button className="hero-band tier-button" type="button" onClick={() => setShowTitleLadder(true)}>
+        <div>
+          <p className="eyebrow">{me.season.label}</p>
+          <h2>{me.profile.accountTitle}</h2>
+          <p>XP {formatXp(me.profile.xp)} · {compactAddress(me.user.address)}</p>
+        </div>
+        <div className="rank-orb">
+          <Crown size={28} />
+        </div>
+      </button>
+
+      {showTitleLadder ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Account title progression">
+          <section className="bottom-sheet">
+            <div className="section-title">
+              <h3>Title Ladder</h3>
+              <button className="icon-button" type="button" aria-label="Close title ladder" onClick={() => setShowTitleLadder(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="ladder-list">
+              {titleLadder.map((item) => (
+                <div className={item.title === me.profile.accountTitle ? "active" : ""} key={item.title}>
+                  <span>{item.title}</span>
+                  <strong>{item.range}</strong>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      <section className="stats-grid">
+        <Stat label="Games" value={me.profile.totalGames} />
+        <Stat label="Wins" value={me.profile.wins} />
+        <Stat label="Losses" value={me.profile.losses} />
+        <Stat label="Draws" value={me.profile.draws} />
+        <Stat label="NFTs" value={me.profile.mintedNfts} />
+      </section>
+
+      <section className="surface">
+        <div className="section-title">
+          <h3>Choose difficulty</h3>
+          <Gamepad2 size={18} />
+        </div>
+        <DifficultyGrid onStart={onStart} busy={busy} />
+      </section>
+
+      <section className="surface">
+        <div className="section-title">
+          <h3>Recent games</h3>
+          <Clock size={18} />
+        </div>
+        <div className="history-list">
+          {me.profile.history.length === 0 ? <p className="muted">No completed games yet.</p> : null}
+          {me.profile.history.slice(0, 4).map((game) => (
+            <div className="history-row" key={game.id}>
+              <span className={`result-pill ${game.result}`}>{resultLabel(game.result)}</span>
+              <div>
+                <strong className="difficulty-label" style={{ "--difficulty-color": difficultyColors[game.difficulty] } as CSSProperties}>
+                  {difficultyLabels[game.difficulty]}
+                </strong>
+                <small>
+                  {game.moveCount} moves · {formatDuration(game.durationSeconds)}
+                </small>
+              </div>
+              {game.minted ? <Gem size={18} /> : null}
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function GameScreen({
+  game,
+  analysis,
+  onMove,
+  moveBusy,
+  onBack,
+  onRefreshProfile
+}: {
+  game: ApiGame;
+  analysis: Analysis | null;
+  onMove: (move: { from: string; to: string; promotion?: string }) => Promise<void>;
+  moveBusy: boolean;
+  onBack: () => void;
+  onRefreshProfile: () => void;
+}) {
+  const boardWidth = useBoardWidth();
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [legalTargets, setLegalTargets] = useState<string[]>([]);
+  const [captureTargets, setCaptureTargets] = useState<string[]>([]);
+  const [moveFeedback, setMoveFeedback] = useState<{ id: number; text: string } | null>(null);
+  const [optimisticFen, setOptimisticFen] = useState<string | null>(null);
+  const displayFen = optimisticFen ?? game.fen;
+  const displayedDuration = useDisplayedDuration(game);
+  const checkedKing = useMemo(() => findCheckedKingSquare(displayFen), [displayFen]);
+
+  useEffect(() => {
+    setSelectedSquare(null);
+    setLegalTargets([]);
+    setCaptureTargets([]);
+    setOptimisticFen(null);
+  }, [game.fen, game.status]);
+
+  useEffect(() => {
+    if (!moveBusy) setOptimisticFen(null);
+  }, [moveBusy]);
+
+  useEffect(() => {
+    if (!moveFeedback) return;
+    const timeout = window.setTimeout(() => setMoveFeedback(null), 5_000);
+    return () => window.clearTimeout(timeout);
+  }, [moveFeedback]);
+
+  function showInvalidMoveFeedback() {
+    setMoveFeedback({ id: Date.now(), text: "That move is not allowed." });
+  }
+
+  function isOwnPiece(piece?: string) {
+    return Boolean(piece?.startsWith("w"));
+  }
+
+  function legalMovesFor(square: string) {
+    const chess = new Chess(displayFen);
+    if (chess.turn() !== "w") return [];
+    return chess.moves({ square: square as ChessSquare, verbose: true });
+  }
+
+  function selectPiece(square: string) {
+    if (game.status !== "active" || moveBusy) return;
+    const chess = new Chess(displayFen);
+    const moves = legalMovesFor(square);
+    setSelectedSquare(square);
+    setLegalTargets(moves.map((move) => move.to));
+    setCaptureTargets(
+      moves
+        .filter((move) => {
+          const targetPiece = chess.get(move.to as ChessSquare);
+          return Boolean(move.captured && targetPiece?.color === "b");
+        })
+        .map((move) => move.to)
+    );
+  }
+
+  function clearSelection() {
+    setSelectedSquare(null);
+    setLegalTargets([]);
+    setCaptureTargets([]);
+  }
+
+  function isLegalMove(sourceSquare: string, targetSquare: string) {
+    return legalMovesFor(sourceSquare).some((move) => move.to === targetSquare);
+  }
+
+  function previewUserMove(sourceSquare: string, targetSquare: string) {
+    const chess = new Chess(displayFen);
+    chess.move({ from: sourceSquare, to: targetSquare, promotion: "q" });
+    return chess.fen();
+  }
+
+  function requestMove(sourceSquare: string, targetSquare: string) {
+    if (game.status !== "active" || moveBusy) return false;
+    if (!isLegalMove(sourceSquare, targetSquare)) {
+      showInvalidMoveFeedback();
+      clearSelection();
+      return false;
+    }
+
+    clearSelection();
+    setOptimisticFen(previewUserMove(sourceSquare, targetSquare));
+    onMove({ from: sourceSquare, to: targetSquare, promotion: "q" });
+    return true;
+  }
+
+  function onPieceDrop(sourceSquare: string, targetSquare: string) {
+    return requestMove(sourceSquare, targetSquare);
+  }
+
+  function onPieceClick(piece: string, square: string) {
+    if (isOwnPiece(piece)) selectPiece(square);
+  }
+
+  function onSquareClick(square: string, piece?: string) {
+    if (game.status !== "active" || moveBusy) return;
+    if (!selectedSquare) {
+      if (isOwnPiece(piece)) selectPiece(square);
+      return;
+    }
+    if (square === selectedSquare) {
+      clearSelection();
+      return;
+    }
+    if (isOwnPiece(piece)) {
+      selectPiece(square);
+      return;
+    }
+    requestMove(selectedSquare, square);
+  }
+
+  const customSquareStyles = useMemo(() => {
+    const styles: Record<string, CSSProperties> = {};
+    const captureTargetSet = new Set(captureTargets);
+    if (selectedSquare) {
+      styles[selectedSquare] = {
+        ...styles[selectedSquare],
+        boxShadow: "inset 0 0 0 4px rgba(0, 82, 255, .78)"
+      };
+    }
+    for (const target of legalTargets.filter((target) => !captureTargetSet.has(target))) {
+      styles[target] = {
+        ...styles[target],
+        background:
+          "radial-gradient(circle at center, rgba(0, 82, 255, .42) 0 18%, transparent 20%), linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.12))"
+      };
+    }
+    for (const target of captureTargets) {
+      styles[target] = {
+        ...styles[target],
+        background:
+          "radial-gradient(circle at center, rgba(239, 68, 68, .78) 0 34%, rgba(239, 68, 68, .30) 36%, rgba(239, 68, 68, .18) 100%)",
+        boxShadow: "inset 0 0 0 4px rgba(239, 68, 68, .82)"
+      };
+    }
+    if (checkedKing) {
+      styles[checkedKing.square] = {
+        ...styles[checkedKing.square],
+        background:
+          "radial-gradient(circle at center, rgba(255, 236, 153, .92) 0 36%, rgba(239, 68, 68, .36) 38%, rgba(239, 68, 68, .22) 100%)",
+        boxShadow: "inset 0 0 0 5px rgba(220, 38, 38, .9)"
+      };
+    }
+    return styles;
+  }, [captureTargets, checkedKing, legalTargets, selectedSquare]);
+
+  return (
+    <div className="screen game-screen">
+      <section className="game-topline">
+        <button className="icon-button" onClick={onBack} aria-label="Close game">
+          <X size={18} />
+        </button>
+        <div>
+          <strong className="difficulty-label" style={{ "--difficulty-color": difficultyColors[game.difficulty] } as CSSProperties}>
+            {difficultyLabels[game.difficulty]}
+          </strong>
+          <span>{game.season.label}</span>
+        </div>
+        <span className={`status-dot ${game.status}`}>{game.status.replace("_", " ")}</span>
+      </section>
+
+      <div className="board-frame" style={{ width: boardWidth }}>
+        <Chessboard
+          id="BasedChessBoard"
+          boardWidth={boardWidth}
+          position={displayFen}
+          onPieceDrop={onPieceDrop}
+          onPieceClick={onPieceClick}
+          onPieceDragBegin={onPieceClick}
+          onPieceDragEnd={clearSelection}
+          onSquareClick={onSquareClick}
+          boardOrientation="white"
+          customPieces={customRoyalPieces}
+          customSquareStyles={customSquareStyles}
+          customBoardStyle={{ borderRadius: 8, boxShadow: "0 18px 44px rgba(0, 20, 80, .18)" }}
+          customDarkSquareStyle={{ backgroundColor: "#7da2f7" }}
+          customLightSquareStyle={{ backgroundColor: "#f5f8ff" }}
+        />
+      </div>
+
+      {moveFeedback ? <div className="move-feedback">{moveFeedback.text}</div> : null}
+      {checkedKing ? (
+        <div className="check-strip">
+          Check: {checkedKing.color === "w" ? "White" : "Black"} king is under attack
+        </div>
+      ) : null}
+      {moveBusy && game.status === "active" ? <div className="thinking-strip">Bot thinking...</div> : null}
+
+      <section className="stats-grid two">
+        <Stat label="Moves" value={game.userMoveCount} />
+        <Stat label="Duration" value={formatDuration(displayedDuration)} />
+      </section>
+
+      {game.status !== "active" ? (
+        <ResultPanel game={game} analysis={analysis} onRefreshProfile={onRefreshProfile} />
+      ) : null}
+    </div>
+  );
+}
+
+function ResultPanel({
+  game,
+  analysis,
+  onRefreshProfile
+}: {
+  game: ApiGame;
+  analysis: Analysis | null;
+  onRefreshProfile: () => void;
+}) {
+  const [share, setShare] = useState<{ text: string; imageUrl: string; twitterUrl: string } | null>(null);
+  const resultText = game.result ? resultLabel(game.result) : "Closed";
+
+  useEffect(() => {
+    if (game.status === "completed") {
+      api.share(game.id).then(setShare).catch(() => setShare(null));
+    }
+  }, [game.id, game.status]);
+
+  return (
+    <>
+      <section className={`result-band ${game.result ?? "neutral"}`}>
+        <p className="eyebrow">Result</p>
+        <h2>{resultText}</h2>
+        <p>
+          <span className="difficulty-inline" style={{ "--difficulty-color": difficultyColors[game.difficulty] } as CSSProperties}>
+            {difficultyLabels[game.difficulty]}
+          </span>{" "}
+          · Moves: {game.userMoveCount} · Duration: {formatDuration(game.durationSeconds)}
+        </p>
+      </section>
+
+      {analysis ? (
+        <section className="surface">
+          <div className="section-title">
+            <h3>Analysis</h3>
+            <BarChart3 size={18} />
+          </div>
+          <div className="analysis-list">
+            <p>{analysis.summary}</p>
+            <p>{analysis.turningPoint}</p>
+            <p>{analysis.strongMoment}</p>
+            <p>{analysis.notableMistake}</p>
+          </div>
+        </section>
+      ) : null}
+
+      {share ? (
+        <section className="surface">
+          <div className="section-title">
+            <h3>Share card</h3>
+            <Flame size={18} />
+          </div>
+          <img className="share-card" alt="Based Chess share card" src={absoluteApiUrl(share.imageUrl)} />
+          <a className="primary-button centered" href={share.twitterUrl} target="_blank" rel="noreferrer">
+            Share to X
+          </a>
+        </section>
+      ) : null}
+
+      {game.mint.eligible ? <MintPanel game={game} onMinted={onRefreshProfile} /> : null}
+      {game.mint.minted ? (
+        <section className="success-strip">
+          <Check size={18} />
+          Result NFT minted
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) {
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient();
+  const [preview, setPreview] = useState<MintPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.mintPreview(game.id).then(setPreview).catch((event) => setError(event instanceof Error ? event.message : "Mint preview unavailable"));
+  }, [game.id]);
+
+  async function mint() {
+    setBusy(true);
+    setError(null);
+    try {
+      const prepared = await api.prepareMint(game.id);
+      if (/^0x0+$/.test(prepared.contractAddress)) {
+        throw new Error("Deploy the NFT contract and set VITE_RESULT_NFT_CONTRACT_ADDRESS before minting.");
+      }
+      const hash = await writeContractAsync({
+        address: prepared.contractAddress,
+        abi: resultNftAbi,
+        functionName: "mintResult",
+        args: [
+          prepared.to,
+          prepared.gameIdHash,
+          prepared.tokenUri,
+          {
+            ...prepared.data,
+            playedAt: BigInt(prepared.data.playedAt),
+            deadline: BigInt(prepared.data.deadline)
+          },
+          prepared.signature
+        ]
+      });
+      const receipt = publicClient ? await publicClient.waitForTransactionReceipt({ hash }) : null;
+      const logs = receipt
+        ? parseEventLogs({ abi: resultNftAbi, logs: receipt.logs, eventName: "ResultMinted" })
+        : [];
+      const tokenId = logs[0]?.args.tokenId?.toString();
+      await api.recordMint({ gameId: game.id, txHash: hash, tokenId });
+      onMinted();
+    } catch (event) {
+      setError(event instanceof Error ? event.message : "Mint failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="surface">
+      <div className="section-title">
+        <h3>NFT preview</h3>
+        <Gem size={18} />
+      </div>
+      {preview ? (
+        <>
+          <img className="nft-preview" alt="Based Chess result NFT preview" src={preview.imageUrl} />
+          <div className="nft-detail-grid">
+            <Stat label="Result" value={resultLabel(preview.attributes.result)} />
+            <Stat label="Difficulty" value={difficultyLabels[preview.attributes.difficulty]} />
+            <Stat label="Rarity" value={rarityLabels[preview.attributes.rarity]} />
+            <Stat label="Moves" value={preview.attributes.move_count} />
+            <Stat label="Duration" value={formatDuration(preview.attributes.duration_seconds)} />
+            <Stat label="Season" value={preview.attributes.season} />
+          </div>
+        </>
+      ) : (
+        <p className="muted">Loading preview...</p>
+      )}
+      <button className="primary-button centered" disabled={busy || !preview} onClick={mint}>
+        <Gem size={18} />
+        {busy ? "Minting..." : "Confirm mint"}
+      </button>
+      {error ? <p className="error-text">{error}</p> : null}
+    </section>
+  );
+}
+
+function LeaderboardsScreen({ season }: { season: MeResponse["season"] | null }) {
+  const [difficulty, setDifficulty] = useState<Difficulty>("easy");
+  const [scope, setScope] = useState<"seasonal" | "all-time">("seasonal");
+  const [metric, setMetric] = useState<keyof typeof metricLabels>("most-wins");
+  const [board, setBoard] = useState<LeaderboardResponse | null>(null);
+  const countdown = useSeasonCountdown(season?.endsAt);
+
+  useEffect(() => {
+    api.leaderboard({ difficulty, scope, metric }).then(setBoard).catch(() => setBoard(null));
+  }, [difficulty, scope, metric]);
+
+  return (
+    <div className="screen">
+      <section className="surface">
+        <div className="section-title">
+          <h3>Leaderboards</h3>
+          <Trophy size={18} />
+        </div>
+        {countdown ? (
+          <div className="season-countdown">
+            <Clock size={16} />
+            <span>{countdown}</span>
+          </div>
+        ) : null}
+        <Segmented
+          values={DIFFICULTIES}
+          value={difficulty}
+          onChange={(next) => setDifficulty(next as Difficulty)}
+          labels={difficultyLabels}
+          colorByValue={difficultyColors}
+        />
+        <Segmented values={["seasonal", "all-time"]} value={scope} onChange={(next) => setScope(next as "seasonal" | "all-time")} />
+        <Segmented values={Object.keys(metricLabels)} value={metric} onChange={(next) => setMetric(next as keyof typeof metricLabels)} labels={metricLabels} />
+      </section>
+
+      <section className="leaderboard-list" style={{ "--difficulty-color": difficultyColors[difficulty] } as CSSProperties}>
+        {board?.rows.length === 0 ? <p className="muted empty">No wins recorded here yet.</p> : null}
+        {board?.rows.map((row) => (
+          <div className="leaderboard-row" key={row.userId}>
+            <span className="rank">#{row.rank}</span>
+            <div>
+              <strong>{row.displayWallet}</strong>
+              <small>
+                {metric === "most-wins"
+                  ? `${row.wins} wins`
+                  : metric === "fastest-wins"
+                    ? `${formatDuration(row.fastestSeconds)} fastest`
+                    : `${row.lowestMoves} moves`}
+              </small>
+            </div>
+            <Medal size={20} />
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function Segmented<T extends string>({
+  values,
+  value,
+  onChange,
+  labels,
+  colorByValue
+}: {
+  values: readonly T[] | string[];
+  value: string;
+  onChange: (value: string) => void;
+  labels?: Partial<Record<string, string>>;
+  colorByValue?: Partial<Record<string, string>>;
+}) {
+  return (
+    <div className="segmented">
+      {values.map((item) => (
+        <button
+          key={item}
+          className={value === item ? "active" : ""}
+          style={colorByValue?.[item] ? ({ "--segment-color": colorByValue[item] } as CSSProperties) : undefined}
+          onClick={() => onChange(item)}
+        >
+          {labels?.[item] ?? item.replaceAll("-", " ")}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ProfileScreen({ profile }: { profile: Profile }) {
+  const [difficultyFilter, setDifficultyFilter] = useState<Difficulty | "all">("all");
+  const [resultFilter, setResultFilter] = useState<GameResult | "all">("all");
+  const [sort, setSort] = useState<"date" | "rarity">("date");
+
+  const collection = useMemo(() => {
+    const rarityWeight: Record<Rarity, number> = { common: 1, rare: 2, epic: 3, legendary: 4 };
+    return profile.collection
+      .filter((item) => difficultyFilter === "all" || item.difficulty === difficultyFilter)
+      .filter((item) => resultFilter === "all" || item.result === resultFilter)
+      .sort((a, b) =>
+        sort === "date"
+          ? new Date(b.mintedAt).getTime() - new Date(a.mintedAt).getTime()
+          : rarityWeight[b.rarity] - rarityWeight[a.rarity]
+      );
+  }, [difficultyFilter, profile.collection, resultFilter, sort]);
+
+  return (
+    <div className="screen">
+      <section className="surface profile-head">
+        <div className="section-title">
+          <h3>{profile.accountTitle}</h3>
+          <User size={18} />
+        </div>
+        <div className="stats-grid tight">
+          <Stat label="Games" value={profile.totalGames} />
+          <Stat label="Wins" value={profile.wins} />
+          <Stat label="Losses" value={profile.losses} />
+          <Stat label="Draws" value={profile.draws} />
+          <Stat label="Win rate" value={profile.totalGames ? `${Math.round((profile.wins / profile.totalGames) * 100)}%` : "0%"} />
+          <Stat label="Streak" value={profile.bestStreak} />
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className="section-title">
+          <h3>Win rate</h3>
+          <Award size={18} />
+        </div>
+        <div className="rate-list">
+          {DIFFICULTIES.map((difficulty) => (
+            <div key={difficulty}>
+              <span className="difficulty-label" style={{ "--difficulty-color": difficultyColors[difficulty] } as CSSProperties}>
+                {difficultyLabels[difficulty]}
+              </span>
+              <strong>{profile.winRateByDifficulty[difficulty].rate}%</strong>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className="section-title">
+          <h3>Trophy gallery</h3>
+          <Gem size={18} />
+        </div>
+        <Segmented
+          values={["all", ...DIFFICULTIES]}
+          value={difficultyFilter}
+          onChange={(next) => setDifficultyFilter(next as Difficulty | "all")}
+          labels={{ all: "All", ...difficultyLabels }}
+          colorByValue={difficultyColors}
+        />
+        <Segmented
+          values={["all", "win", "loss", "draw"]}
+          value={resultFilter}
+          onChange={(next) => setResultFilter(next as GameResult | "all")}
+          labels={resultFilterLabels}
+        />
+        <Segmented values={["date", "rarity"]} value={sort} onChange={(next) => setSort(next as "date" | "rarity")} />
+      </section>
+
+      <section className="gallery-grid">
+        {collection.length === 0 ? <p className="muted empty">No minted NFTs match these filters.</p> : null}
+        {collection.map((item) => (
+          <article className="nft-tile" key={item.id}>
+            <img alt={`${resultLabel(item.result)} NFT`} src={item.imageUrl} />
+            <strong>{rarityLabels[item.rarity]}</strong>
+            <small className="difficulty-label" style={{ "--difficulty-color": difficultyColors[item.difficulty] } as CSSProperties}>
+              {difficultyLabels[item.difficulty]} · {resultLabel(item.result)}
+            </small>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function App() {
+  const { address, isConnected } = useAccount();
+  const { disconnect } = useDisconnect();
+  const [authed, setAuthed] = useState(false);
+  const [tab, setTab] = useState<Tab>("home");
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [activeGame, setActiveGame] = useState<ApiGame | null>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const hasSession = authed && (isConnected || env.enableDevAuth);
+
+  const loadMe = useCallback(async () => {
+    if (!api.token()) return;
+    const next = await api.me();
+    if (address && next.user.address.toLowerCase() !== address.toLowerCase()) {
+      setAuthToken(null);
+      setAuthed(false);
+      setMe(null);
+      setActiveGame(null);
+      return;
+    }
+    setMe(next);
+  }, [address]);
+
+  useEffect(() => {
+    if (!isConnected && !env.enableDevAuth) {
+      setAuthToken(null);
+      setAuthed(false);
+      setMe(null);
+      setActiveGame(null);
+      return;
+    }
+    if (api.token()) setAuthed(true);
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (hasSession) loadMe().catch(() => setAuthed(false));
+  }, [hasSession, loadMe]);
+
+  useEffect(() => {
+    if (!error) return;
+    const timeout = window.setTimeout(() => setError(null), 5_000);
+    return () => window.clearTimeout(timeout);
+  }, [error]);
+
+  async function start(difficulty: Difficulty) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await api.startGame(difficulty);
+      setActiveGame(response.game);
+      setAnalysis(response.analysis);
+      setTab("play");
+    } catch (event) {
+      setError(event instanceof Error ? event.message : "Could not start game");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function move(moveInput: { from: string; to: string; promotion?: string }) {
+    if (!activeGame) return;
+    setBusy(true);
+    try {
+      const response = await api.move(activeGame.id, moveInput);
+      setActiveGame(response.game);
+      setAnalysis(response.analysis);
+      if (response.game.status === "completed") await loadMe();
+    } catch (event) {
+      const message = event instanceof Error ? event.message : "Illegal move";
+      setError(message.toLowerCase().includes("illegal") ? "That move is not allowed." : message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function signOut() {
+    setAuthToken(null);
+    setAuthed(false);
+    setMe(null);
+    setActiveGame(null);
+    disconnect();
+  }
+
+  if (!hasSession) return <ConnectScreen onAuthed={() => setAuthed(true)} />;
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div className="header-brand">
+          <img className="brand-logo header-logo" src={brandLogoSrc} alt="" aria-hidden="true" />
+          <div>
+            <p className="eyebrow">Based Chess</p>
+            <strong>{me?.season.label ?? "Season"}</strong>
+          </div>
+        </div>
+        <button className="wallet-chip" onClick={signOut}>
+          <Wallet size={16} />
+          {address && isConnected ? compactAddress(address) : me?.user.address ? compactAddress(me.user.address) : "Wallet"}
+        </button>
+      </header>
+
+      {error ? (
+        <button className="toast" onClick={() => setError(null)}>
+          {error}
+        </button>
+      ) : null}
+
+      {tab === "play" && activeGame ? (
+        <GameScreen
+          game={activeGame}
+          analysis={analysis}
+          moveBusy={busy}
+          onMove={move}
+          onBack={() => setTab("home")}
+          onRefreshProfile={loadMe}
+        />
+      ) : tab === "leaderboards" ? (
+        <LeaderboardsScreen season={me?.season ?? null} />
+      ) : tab === "profile" && me ? (
+        <ProfileScreen profile={me.profile} />
+      ) : me ? (
+        <HomeScreen me={me} onStart={start} busy={busy} />
+      ) : (
+        <div className="screen">
+          <p className="muted">Loading...</p>
+        </div>
+      )}
+
+      <nav className="bottom-nav">
+        <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}>
+          <Home size={19} />
+          Home
+        </button>
+        <button className={tab === "play" ? "active" : ""} onClick={() => setTab(activeGame ? "play" : "home")}>
+          <Gamepad2 size={19} />
+          Play
+        </button>
+        <button className={tab === "leaderboards" ? "active" : ""} onClick={() => setTab("leaderboards")}>
+          <Trophy size={19} />
+          Boards
+        </button>
+        <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>
+          <User size={19} />
+          Profile
+        </button>
+      </nav>
+    </main>
+  );
+}
+
+export default App;

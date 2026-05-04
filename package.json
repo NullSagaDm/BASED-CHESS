@@ -1,0 +1,38 @@
+{
+  "name": "based-chess",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile-first Base App chess mini app with wallet auth, bot play, leaderboards, and result NFTs.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build:shared && npm-run-all --parallel dev:api dev:web",
+    "dev:api": "npm --workspace @based-chess/api run dev",
+    "dev:web": "npm --workspace @based-chess/web run dev",
+    "build": "npm-run-all build:shared build:api build:web",
+    "build:shared": "npm --workspace @based-chess/shared run build",
+    "build:api": "npm --workspace @based-chess/api run build",
+    "build:web": "npm --workspace @based-chess/web run build",
+    "typecheck": "npm run build:shared && npm-run-all typecheck:shared typecheck:api typecheck:web",
+    "typecheck:shared": "npm --workspace @based-chess/shared run typecheck",
+    "typecheck:api": "npm --workspace @based-chess/api run typecheck",
+    "typecheck:web": "npm --workspace @based-chess/web run typecheck",
+    "db:generate": "npm --workspace @based-chess/api run db:generate",
+    "db:migrate": "npm --workspace @based-chess/api run db:migrate",
+    "db:seed": "npm --workspace @based-chess/api run db:seed",
+    "job:close-inactive": "npm --workspace @based-chess/api run job:close-inactive",
+    "test": "npm-run-all test:shared test:api",
+    "test:shared": "npm --workspace @based-chess/shared run test",
+    "test:api": "npm --workspace @based-chess/api run test"
+  },
+  "devDependencies": {
+    "@openzeppelin/contracts": "^5.2.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20.18"
+  }
+}
