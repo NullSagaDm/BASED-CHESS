@@ -281,7 +281,15 @@ function ConnectScreen({ onAuthed }: { onAuthed: () => void }) {
   );
 }
 
-function DifficultyGrid({ onStart, busy }: { onStart: (difficulty: Difficulty) => void; busy: boolean }) {
+function DifficultyGrid({
+  onStart,
+  busy,
+  selectedDifficulty
+}: {
+  onStart: (difficulty: Difficulty) => void;
+  busy: boolean;
+  selectedDifficulty: Difficulty;
+}) {
   const icons = {
     easy: Shield,
     medium: Swords,
@@ -295,11 +303,12 @@ function DifficultyGrid({ onStart, busy }: { onStart: (difficulty: Difficulty) =
         const Icon = icons[difficulty];
         return (
           <button
-            className={`difficulty-card ${difficulty}`}
+            className={`difficulty-card ${difficulty}${selectedDifficulty === difficulty ? " selected" : ""}`}
             key={difficulty}
             style={{ "--difficulty-color": difficultyColors[difficulty] } as CSSProperties}
             disabled={busy}
             onClick={() => onStart(difficulty)}
+            aria-pressed={selectedDifficulty === difficulty}
           >
             <Icon size={22} />
             <span>{difficultyLabels[difficulty]}</span>
@@ -314,11 +323,13 @@ function DifficultyGrid({ onStart, busy }: { onStart: (difficulty: Difficulty) =
 function HomeScreen({
   me,
   onStart,
-  busy
+  busy,
+  selectedDifficulty
 }: {
   me: MeResponse;
   onStart: (difficulty: Difficulty) => void;
   busy: boolean;
+  selectedDifficulty: Difficulty;
 }) {
   const [showTitleLadder, setShowTitleLadder] = useState(false);
 
@@ -369,7 +380,7 @@ function HomeScreen({
           <h3>Choose difficulty</h3>
           <Gamepad2 size={18} />
         </div>
-        <DifficultyGrid onStart={onStart} busy={busy} />
+        <DifficultyGrid onStart={onStart} busy={busy} selectedDifficulty={selectedDifficulty} />
       </section>
 
       <section className="surface">
@@ -420,16 +431,30 @@ function GameScreen({
   const [captureTargets, setCaptureTargets] = useState<string[]>([]);
   const [moveFeedback, setMoveFeedback] = useState<{ id: number; text: string } | null>(null);
   const [optimisticFen, setOptimisticFen] = useState<string | null>(null);
+  const [showBoardResult, setShowBoardResult] = useState(false);
   const displayFen = optimisticFen ?? game.fen;
   const displayedDuration = useDisplayedDuration(game);
   const checkedKing = useMemo(() => findCheckedKingSquare(displayFen), [displayFen]);
+  const boardResultText =
+    game.status === "completed" && game.result
+      ? game.result === "win"
+        ? "WIN"
+        : game.result === "loss"
+          ? "LOSE"
+          : "DRAW"
+      : null;
 
   useEffect(() => {
     setSelectedSquare(null);
     setLegalTargets([]);
     setCaptureTargets([]);
     setOptimisticFen(null);
+    if (game.status === "active") setShowBoardResult(false);
   }, [game.fen, game.status]);
+
+  useEffect(() => {
+    if (boardResultText) setShowBoardResult(true);
+  }, [boardResultText, game.id]);
 
   useEffect(() => {
     if (!moveBusy) setOptimisticFen(null);
@@ -593,6 +618,16 @@ function GameScreen({
           customDarkSquareStyle={{ backgroundColor: "#7da2f7" }}
           customLightSquareStyle={{ backgroundColor: "#f5f8ff" }}
         />
+        {showBoardResult && boardResultText ? (
+          <button
+            className={`board-result-overlay ${game.result}`}
+            type="button"
+            onClick={() => setShowBoardResult(false)}
+            aria-label={`${boardResultText}. Dismiss result overlay`}
+          >
+            {boardResultText}
+          </button>
+        ) : null}
       </div>
 
       {moveFeedback ? <div className="move-feedback">{moveFeedback.text}</div> : null}
@@ -691,14 +726,22 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
   const [preview, setPreview] = useState<MintPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   useEffect(() => {
     api.mintPreview(game.id).then(setPreview).catch((event) => setError(event instanceof Error ? event.message : "Mint preview unavailable"));
   }, [game.id]);
 
+  useEffect(() => {
+    if (!successMessage) return;
+    const timeout = window.setTimeout(() => setSuccessMessage(null), 5_000);
+    return () => window.clearTimeout(timeout);
+  }, [successMessage]);
+
   async function mint() {
     setBusy(true);
     setError(null);
+    setSuccessMessage(null);
     try {
       const prepared = await api.prepareMint(game.id);
       if (/^0x0+$/.test(prepared.contractAddress)) {
@@ -726,6 +769,7 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
         : [];
       const tokenId = logs[0]?.args.tokenId?.toString();
       await api.recordMint({ gameId: game.id, txHash: hash, tokenId });
+      setSuccessMessage("Congratulations! Your NFT has been minted successfully.");
       onMinted();
     } catch (event) {
       setError(event instanceof Error ? event.message : "Mint failed");
@@ -759,6 +803,11 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
         <Gem size={18} />
         {busy ? "Minting..." : "Confirm mint"}
       </button>
+      {successMessage ? (
+        <button className="toast success-toast" type="button" onClick={() => setSuccessMessage(null)} aria-live="polite">
+          {successMessage}
+        </button>
+      ) : null}
       {error ? <p className="error-text">{error}</p> : null}
     </section>
   );
@@ -947,6 +996,7 @@ function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [activeGame, setActiveGame] = useState<ApiGame | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>("easy");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hasSession = authed && (isConnected || env.enableDevAuth);
@@ -986,6 +1036,7 @@ function App() {
   }, [error]);
 
   async function start(difficulty: Difficulty) {
+    setSelectedDifficulty(difficulty);
     setBusy(true);
     setError(null);
     try {
@@ -1062,7 +1113,7 @@ function App() {
       ) : tab === "profile" && me ? (
         <ProfileScreen profile={me.profile} />
       ) : me ? (
-        <HomeScreen me={me} onStart={start} busy={busy} />
+        <HomeScreen me={me} onStart={start} busy={busy} selectedDifficulty={selectedDifficulty} />
       ) : (
         <div className="screen">
           <p className="muted">Loading...</p>

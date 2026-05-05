@@ -353,6 +353,26 @@ button {
   padding: 14px;
   text-align: left;
   font-weight: 900;
+  cursor: pointer;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease, transform .16s ease;
+}
+
+.difficulty-card:hover:not(:disabled),
+.difficulty-card.selected {
+  border-color: var(--difficulty-color, var(--blue));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--difficulty-color, var(--blue)) 18%, white), white 66%);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--difficulty-color, var(--blue)) 20%, transparent);
+  transform: translateY(-1px);
+}
+
+.difficulty-card:hover:not(:disabled) span,
+.difficulty-card.selected span {
+  font-weight: 950;
+}
+
+.difficulty-card:disabled {
+  cursor: not-allowed;
 }
 
 .difficulty-card svg,
@@ -441,6 +461,37 @@ button {
 .board-frame {
   align-self: center;
   aspect-ratio: 1;
+  position: relative;
+}
+
+.board-result-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border: 0;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: rgba(245, 248, 255, .34);
+  color: white;
+  font-size: 64px;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-shadow: 0 6px 24px rgba(0, 18, 56, .36);
+  cursor: pointer;
+  backdrop-filter: blur(2px);
+}
+
+.board-result-overlay.win {
+  color: #10b967;
+}
+
+.board-result-overlay.loss {
+  color: #ef4444;
+}
+
+.board-result-overlay.draw {
+  color: var(--blue);
 }
 
 .move-feedback,
@@ -733,6 +784,12 @@ button {
   box-shadow: 0 16px 38px rgba(93, 22, 22, .15);
   font-weight: 800;
   text-align: left;
+}
+
+.toast.success-toast {
+  border-color: #b7efc5;
+  background: #f0fff4;
+  color: #0c6b3c;
 }
 
 @media (min-width: 481px) {
