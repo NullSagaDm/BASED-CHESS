@@ -178,8 +178,10 @@ export async function makeUserMove(input: {
     return persistCompletedGame(game.id, resultFromGameOver(chess, userMove.color), chess, moves, game.startedAt);
   }
 
-  await sleep(randomBotDelayMs());
+  const botDelayStartedAt = Date.now();
+  const botDelayMs = randomBotDelayMs();
   const botMove = chooseBotMove(chess, difficulty);
+  await sleep(Math.max(0, botDelayMs - (Date.now() - botDelayStartedAt)));
   if (!botMove) {
     return persistCompletedGame(game.id, "win", chess, moves, game.startedAt);
   }
