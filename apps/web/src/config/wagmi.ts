@@ -5,7 +5,7 @@ import { baseAccount, injected } from "wagmi/connectors";
 import { env } from "./env";
 
 export const chain = env.baseChain === "base" ? base : baseSepolia;
-export const builderCodeDataSuffix = "0x62635f667a726e63797a380b0080218021802180218021802180218021";
+export const builderCodeDataSuffix = "0x62635f667a726e63797a380b0080218021802180218021802180218021" as const;
 
 export const wagmiConfig = createConfig({
   chains: [base, baseSepolia],
