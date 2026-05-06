@@ -8,8 +8,8 @@ import { recomputeUserStats } from "./statsService.js";
 import { chooseBotMove } from "./chessBot.js";
 
 const INACTIVITY_LIMIT_MS = 10 * 60 * 1000;
-const BOT_DELAY_MIN_MS = 1_000;
-const BOT_DELAY_MAX_MS = 2_000;
+const BOT_DELAY_MIN_MS = 2_000;
+const BOT_DELAY_MAX_MS = 3_000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

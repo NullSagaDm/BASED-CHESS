@@ -3,6 +3,7 @@ import { Chessboard } from "react-chessboard";
 import { Chess, type Square as ChessSquare } from "chess.js";
 import { createSiweMessage } from "viem/siwe";
 import { getAddress, parseAbi, parseAbiItem, parseEventLogs, type Address } from "viem";
+import { base } from "viem/chains";
 import { useAccount, useConnect, useDisconnect, usePublicClient, useSignMessage, useWriteContract } from "wagmi";
 import {
   Award,
@@ -363,7 +364,7 @@ function DifficultyGrid({
 }: {
   onStart: (difficulty: Difficulty) => void;
   busy: boolean;
-  selectedDifficulty: Difficulty;
+  selectedDifficulty: Difficulty | null;
 }) {
   const icons = {
     easy: Shield,
@@ -404,7 +405,7 @@ function HomeScreen({
   me: MeResponse;
   onStart: (difficulty: Difficulty) => void;
   busy: boolean;
-  selectedDifficulty: Difficulty;
+  selectedDifficulty: Difficulty | null;
 }) {
   const [showTitleLadder, setShowTitleLadder] = useState(false);
 
@@ -978,7 +979,7 @@ function Segmented<T extends string>({
 }
 
 function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAddress: string | undefined }) {
-  const publicClient = usePublicClient();
+  const publicClient = usePublicClient({ chainId: base.id });
   const [difficultyFilter, setDifficultyFilter] = useState<Difficulty | "all">("all");
   const [resultFilter, setResultFilter] = useState<GameResult | "all">("all");
   const [sort, setSort] = useState<"date" | "rarity">("date");
@@ -1152,7 +1153,7 @@ function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [activeGame, setActiveGame] = useState<ApiGame | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>("easy");
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hasSession = authed && (isConnected || env.enableDevAuth);
