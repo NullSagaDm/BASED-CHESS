@@ -24,7 +24,7 @@ const envSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["SEASON_ZERO_START"],
-      message: SEASON_ZERO_START must be ${ACTIVE_SEASON_ZERO_START}
+      message: `SEASON_ZERO_START must be ${ACTIVE_SEASON_ZERO_START}`
     });
   }
 });

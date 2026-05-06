@@ -14,7 +14,7 @@ export async function ensureSeason(at = new Date()) {
   });
 
   if (overlappingSeason) {
-    throw new Error(Overlapping season row detected: ${overlappingSeason.label});
+    throw new Error(`Overlapping season row detected: ${overlappingSeason.label}`);
   }
 
   return prisma.season.upsert({
