@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "r
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square as ChessSquare } from "chess.js";
 import { createSiweMessage } from "viem/siwe";
-import { parseEventLogs } from "viem";
+import { getAddress, parseAbi, parseAbiItem, parseEventLogs, type Address } from "viem";
 import { useAccount, useConnect, useDisconnect, usePublicClient, useSignMessage, useWriteContract } from "wagmi";
 import {
   Award,
@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 import {
   DIFFICULTIES,
+  RARITIES,
+  RESULTS,
   difficultyColors,
   difficultyLabels,
   formatXp,
@@ -43,6 +45,13 @@ import type { Analysis, ApiGame, LeaderboardResponse, MeResponse, MintPreview, P
 import { absoluteApiUrl, compactAddress, formatDuration } from "./utils/format";
 
 type Tab = "home" | "play" | "leaderboards" | "profile";
+type GalleryItem = Profile["collection"][number];
+
+const erc721GalleryAbi = parseAbi([
+  "function ownerOf(uint256 tokenId) view returns (address)",
+  "function tokenURI(uint256 tokenId) view returns (string)"
+]);
+const transferEvent = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)");
 
 const metricLabels = {
   "most-wins": "Most Wins",
@@ -66,6 +75,72 @@ const titleLadder = [
 ] as const;
 
 const brandLogoSrc = "/brand/based-chess-logo.jpg";
+const zeroAddress = "0x0000000000000000000000000000000000000000";
+
+function isConfiguredAddress(value: string): value is Address {
+  return /^0x[a-fA-F0-9]{40}$/.test(value) && value.toLowerCase() !== zeroAddress;
+}
+
+function isResult(value: unknown): value is GameResult {
+  return typeof value === "string" && (RESULTS as readonly string[]).includes(value);
+}
+
+function isRarity(value: unknown): value is Rarity {
+  return typeof value === "string" && (RARITIES as readonly string[]).includes(value);
+}
+
+function isDifficulty(value: unknown): value is Difficulty {
+  return typeof value === "string" && (DIFFICULTIES as readonly string[]).includes(value);
+}
+
+function metadataField(metadata: Record<string, unknown>, key: string) {
+  const properties = metadata.properties;
+  if (metadata[key] != null) return metadata[key];
+  if (properties && typeof properties === "object" && key in properties) {
+    return (properties as Record<string, unknown>)[key];
+  }
+  return undefined;
+}
+
+function metadataString(metadata: Record<string, unknown>, key: string) {
+  const value = metadataField(metadata, key);
+  return typeof value === "string" ? value : null;
+}
+
+function metadataUrl(tokenUri: string) {
+  if (tokenUri.startsWith("ipfs://")) return `https://ipfs.io/ipfs/${tokenUri.slice("ipfs://".length)}`;
+  return absoluteApiUrl(tokenUri);
+}
+
+function galleryItemFromMetadata(tokenId: bigint, tokenUri: string, metadata: Record<string, unknown>): GalleryItem | null {
+  const result = metadataField(metadata, "result");
+  const difficulty = metadataField(metadata, "difficulty");
+  const rarity = metadataField(metadata, "rarity");
+  if (!isResult(result) || !isDifficulty(difficulty) || !isRarity(rarity)) return null;
+
+  const tokenIdText = tokenId.toString();
+  const gameId = metadataString(metadata, "game_id") ?? `onchain-${tokenIdText}`;
+  const image = metadataString(metadata, "image");
+  const playedAt = metadataString(metadata, "played_at");
+
+  return {
+    id: `onchain-${tokenIdText}`,
+    gameId,
+    result,
+    difficulty,
+    rarity,
+    tokenId: tokenIdText,
+    txHash: "onchain",
+    imageUrl: image ? absoluteApiUrl(image) : absoluteApiUrl(`/nft-images/${gameId}.svg`),
+    tokenUri,
+    season: metadataString(metadata, "season") ?? "Onchain",
+    mintedAt: playedAt && Number.isFinite(Date.parse(playedAt)) ? new Date(playedAt).toISOString() : new Date().toISOString()
+  };
+}
+
+function galleryKey(item: GalleryItem) {
+  return item.tokenId ? `token:${item.tokenId}` : `game:${item.gameId}`;
+}
 
 function useBoardWidth() {
   const [width, setWidth] = useState(() => Math.min(window.innerWidth - 32, 430));
@@ -768,7 +843,9 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
         ? parseEventLogs({ abi: resultNftAbi, logs: receipt.logs, eventName: "ResultMinted" })
         : [];
       const tokenId = logs[0]?.args.tokenId?.toString();
-      await api.recordMint({ gameId: game.id, txHash: hash, tokenId });
+      await api.recordMint({ gameId: game.id, txHash: hash, tokenId }).catch((event) => {
+        console.warn("Mint record sync is pending", event);
+      });
       setSuccessMessage("Congratulations! Your NFT has been minted successfully.");
       onMinted();
     } catch (event) {
@@ -900,14 +977,93 @@ function Segmented<T extends string>({
   );
 }
 
-function ProfileScreen({ profile }: { profile: Profile }) {
+function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAddress: string | undefined }) {
+  const publicClient = usePublicClient();
   const [difficultyFilter, setDifficultyFilter] = useState<Difficulty | "all">("all");
   const [resultFilter, setResultFilter] = useState<GameResult | "all">("all");
   const [sort, setSort] = useState<"date" | "rarity">("date");
+  const [onchainGallery, setOnchainGallery] = useState<{
+    checked: boolean;
+    ownedTokenIds: Set<string>;
+    items: GalleryItem[];
+  }>({ checked: false, ownedTokenIds: new Set(), items: [] });
+
+  useEffect(() => {
+    let canceled = false;
+
+    async function loadOnchainGallery() {
+      if (!publicClient || !walletAddress || !isConfiguredAddress(env.resultNftContractAddress)) {
+        setOnchainGallery({ checked: false, ownedTokenIds: new Set(), items: [] });
+        return;
+      }
+
+      try {
+        const owner = getAddress(walletAddress as Address);
+        const contractAddress = getAddress(env.resultNftContractAddress);
+        const logs = await publicClient.getLogs({
+          address: contractAddress,
+          event: transferEvent,
+          args: { to: owner },
+          fromBlock: 0n,
+          toBlock: "latest"
+        });
+        const candidateTokenIds = [...new Set(logs.map((log) => log.args.tokenId).filter((tokenId): tokenId is bigint => tokenId != null))];
+
+        const ownedEntries = await Promise.all(
+          candidateTokenIds.map(async (tokenId) => {
+            try {
+              const currentOwner = await publicClient.readContract({
+                address: contractAddress,
+                abi: erc721GalleryAbi,
+                functionName: "ownerOf",
+                args: [tokenId]
+              });
+              if (getAddress(currentOwner) !== owner) return null;
+              const tokenUri = await publicClient.readContract({
+                address: contractAddress,
+                abi: erc721GalleryAbi,
+                functionName: "tokenURI",
+                args: [tokenId]
+              });
+              const metadata = (await fetch(metadataUrl(tokenUri)).then((response) => response.json())) as Record<string, unknown>;
+              return {
+                tokenId: tokenId.toString(),
+                item: galleryItemFromMetadata(tokenId, tokenUri, metadata)
+              };
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        if (canceled) return;
+        setOnchainGallery({
+          checked: true,
+          ownedTokenIds: new Set(ownedEntries.flatMap((entry) => (entry ? [entry.tokenId] : []))),
+          items: ownedEntries.flatMap((entry) => (entry?.item ? [entry.item] : []))
+        });
+      } catch {
+        if (!canceled) setOnchainGallery({ checked: false, ownedTokenIds: new Set(), items: [] });
+      }
+    }
+
+    loadOnchainGallery();
+    return () => {
+      canceled = true;
+    };
+  }, [publicClient, profile.collection, walletAddress]);
 
   const collection = useMemo(() => {
     const rarityWeight: Record<Rarity, number> = { common: 1, rare: 2, epic: 3, legendary: 4 };
-    return profile.collection
+    const merged = new Map<string, GalleryItem>();
+    const backendItems = onchainGallery.checked
+      ? profile.collection.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
+      : profile.collection;
+    for (const item of backendItems) merged.set(galleryKey(item), item);
+    for (const item of onchainGallery.items) {
+      if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
+    }
+    return [...merged.values()]
       .filter((item) => difficultyFilter === "all" || item.difficulty === difficultyFilter)
       .filter((item) => resultFilter === "all" || item.result === resultFilter)
       .sort((a, b) =>
@@ -915,7 +1071,7 @@ function ProfileScreen({ profile }: { profile: Profile }) {
           ? new Date(b.mintedAt).getTime() - new Date(a.mintedAt).getTime()
           : rarityWeight[b.rarity] - rarityWeight[a.rarity]
       );
-  }, [difficultyFilter, profile.collection, resultFilter, sort]);
+  }, [difficultyFilter, onchainGallery, profile.collection, resultFilter, sort]);
 
   return (
     <div className="screen">
@@ -1111,7 +1267,7 @@ function App() {
       ) : tab === "leaderboards" ? (
         <LeaderboardsScreen season={me?.season ?? null} />
       ) : tab === "profile" && me ? (
-        <ProfileScreen profile={me.profile} />
+        <ProfileScreen profile={me.profile} walletAddress={address ?? me.user.address} />
       ) : me ? (
         <HomeScreen me={me} onStart={start} busy={busy} selectedDifficulty={selectedDifficulty} />
       ) : (
