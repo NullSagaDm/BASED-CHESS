@@ -33,6 +33,7 @@ import {
   difficultyLabels,
   formatXp,
   rarityLabels,
+  rarityByDifficulty,
   resultLabel,
   resultNftAbi,
   type Difficulty,
@@ -77,6 +78,8 @@ const titleLadder = [
 
 const brandLogoSrc = "/brand/based-chess-logo.jpg";
 const zeroAddress = "0x0000000000000000000000000000000000000000";
+const recoveredGalleryStorageKey = "based-chess-recovered-nfts";
+const recoveredGalleryEvent = "based-chess:recovered-nft";
 
 function isConfiguredAddress(value: string): value is Address {
   return /^0x[a-fA-F0-9]{40}$/.test(value) && value.toLowerCase() !== zeroAddress;
@@ -150,6 +153,49 @@ function galleryItemFromMetadata(tokenId: bigint, tokenUri: string, metadata: Re
 
 function galleryKey(item: GalleryItem) {
   return item.tokenId ? `token:${item.tokenId}` : `game:${item.gameId}`;
+}
+
+function readRecoveredGalleryItems(): GalleryItem[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(recoveredGalleryStorageKey) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((item): item is GalleryItem => item && typeof item === "object") : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecoveredGalleryItem(item: GalleryItem) {
+  const merged = new Map(readRecoveredGalleryItems().map((entry) => [galleryKey(entry), entry]));
+  merged.set(galleryKey(item), item);
+  window.localStorage.setItem(recoveredGalleryStorageKey, JSON.stringify([...merged.values()]));
+  window.dispatchEvent(new Event(recoveredGalleryEvent));
+}
+
+function galleryItemFromMintFallback(input: {
+  game: ApiGame;
+  preview: MintPreview | null;
+  tokenId: bigint;
+  tokenUri: string;
+  txHash: string;
+}) {
+  const result = input.preview?.attributes.result ?? input.game.result;
+  if (!result) return null;
+  const difficulty = input.preview?.attributes.difficulty ?? input.game.difficulty;
+  const rarity = input.preview?.attributes.rarity ?? rarityByDifficulty[difficulty];
+  const playedAt = input.preview?.attributes.played_at;
+  return {
+    id: `onchain-${input.tokenId.toString()}`,
+    gameId: input.game.id,
+    result,
+    difficulty,
+    rarity,
+    tokenId: input.tokenId.toString(),
+    txHash: input.txHash,
+    imageUrl: input.preview?.imageUrl ? absoluteApiUrl(input.preview.imageUrl) : absoluteApiUrl(`/nft-images/${input.game.id}.svg`),
+    tokenUri: input.tokenUri,
+    season: input.preview?.attributes.season ?? input.game.season.label,
+    mintedAt: playedAt && Number.isFinite(Date.parse(playedAt)) ? new Date(playedAt).toISOString() : new Date().toISOString()
+  } satisfies GalleryItem;
 }
 
 function useBoardWidth() {
@@ -857,7 +903,80 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
       const logs = receipt
         ? parseEventLogs({ abi: resultNftAbi, logs: receipt.logs, eventName: "ResultMinted" })
         : [];
-      const tokenId = logs[0]?.args.tokenId?.toString();
+      const contractAddress = getAddress(prepared.contractAddress);
+      const transferLogs = receipt
+        ? parseEventLogs({ abi: [transferEvent], logs: receipt.logs, eventName: "Transfer" })
+        : [];
+      const mintTransfer = transferLogs.find(
+        (log) =>
+          getAddress(log.address) === contractAddress &&
+          log.args.tokenId != null &&
+          getAddress(log.args.to) !== zeroAddress
+      );
+      const receiptTokenId = mintTransfer?.args.tokenId;
+      const tokenId = (receiptTokenId ?? logs[0]?.args.tokenId)?.toString();
+
+      if (publicClient && receiptTokenId != null && mintTransfer?.args.to) {
+        const transferTo = getAddress(mintTransfer.args.to);
+        const expectedOwner = getAddress(prepared.to);
+        try {
+          const currentOwner = getAddress(
+            await publicClient.readContract({
+              address: contractAddress,
+              abi: erc721GalleryAbi,
+              functionName: "ownerOf",
+              args: [receiptTokenId]
+            })
+          );
+          if (currentOwner === transferTo && currentOwner === expectedOwner) {
+            let tokenUri = prepared.tokenUri;
+            let recoveredItem: GalleryItem | null = null;
+            try {
+              tokenUri = await publicClient.readContract({
+                address: contractAddress,
+                abi: erc721GalleryAbi,
+                functionName: "tokenURI",
+                args: [receiptTokenId]
+              });
+              const metadata = (await fetch(metadataUrl(tokenUri)).then((response) => response.json())) as Record<string, unknown>;
+              recoveredItem = galleryItemFromMetadata(receiptTokenId, tokenUri, metadata);
+            } catch {
+              recoveredItem = null;
+            }
+            const fallbackItem = galleryItemFromMintFallback({
+              game,
+              preview,
+              tokenId: receiptTokenId,
+              tokenUri,
+              txHash: hash
+            });
+            const itemToRemember = recoveredItem ?? fallbackItem;
+            if (itemToRemember) rememberRecoveredGalleryItem(itemToRemember);
+          } else {
+            console.warn("Minted NFT owner mismatch", {
+              txHash: hash,
+              tokenId: receiptTokenId.toString(),
+              preparedTo: expectedOwner,
+              transferTo,
+              ownerOf: currentOwner
+            });
+          }
+        } catch (event) {
+          console.warn("Minted NFT receipt recovery failed", {
+            txHash: hash,
+            tokenId: receiptTokenId.toString(),
+            transferTo,
+            preparedTo: expectedOwner,
+            error: event instanceof Error ? event.message : "Unknown recovery error"
+          });
+        }
+      } else if (receipt) {
+        console.warn("Mint receipt did not include a recoverable result NFT Transfer event", {
+          txHash: hash,
+          contractAddress
+        });
+      }
+
       await api.recordMint({ gameId: game.id, txHash: hash, tokenId }).catch((event) => {
         console.warn("Mint record sync is pending", event);
       });
@@ -1002,6 +1121,17 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
     ownedTokenIds: Set<string>;
     items: GalleryItem[];
   }>({ checked: false, ownedTokenIds: new Set(), items: [] });
+  const [recoveredGalleryItems, setRecoveredGalleryItems] = useState<GalleryItem[]>(() => readRecoveredGalleryItems());
+
+  useEffect(() => {
+    const refreshRecoveredItems = () => setRecoveredGalleryItems(readRecoveredGalleryItems());
+    window.addEventListener(recoveredGalleryEvent, refreshRecoveredItems);
+    window.addEventListener("storage", refreshRecoveredItems);
+    return () => {
+      window.removeEventListener(recoveredGalleryEvent, refreshRecoveredItems);
+      window.removeEventListener("storage", refreshRecoveredItems);
+    };
+  }, []);
 
   useEffect(() => {
     let canceled = false;
@@ -1015,14 +1145,37 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
       try {
         const owner = getAddress(walletAddress as Address);
         const contractAddress = getAddress(env.resultNftContractAddress);
-        const logs = await publicClient.getLogs({
-          address: contractAddress,
-          event: transferEvent,
-          args: { to: owner },
-          fromBlock: 0n,
-          toBlock: "latest"
-        });
-        const candidateTokenIds = [...new Set(logs.map((log) => log.args.tokenId).filter((tokenId): tokenId is bigint => tokenId != null))];
+        let logs: Array<{ args: { tokenId?: bigint | null } }> = [];
+        try {
+          logs = await publicClient.getLogs({
+            address: contractAddress,
+            event: transferEvent,
+            args: { to: owner },
+            fromBlock: 0n,
+            toBlock: "latest"
+          });
+        } catch (event) {
+          console.warn("Onchain gallery Transfer log query failed; falling back to known token ownership checks", {
+            owner,
+            contractAddress,
+            error: event instanceof Error ? event.message : "Unknown log query error"
+          });
+        }
+        const recoveredTokenIds = recoveredGalleryItems
+          .map((item) => item.tokenId)
+          .filter((tokenId): tokenId is string => typeof tokenId === "string" && /^\d+$/.test(tokenId))
+          .map((tokenId) => BigInt(tokenId));
+        const backendTokenIds = profile.collection
+          .map((item) => item.tokenId)
+          .filter((tokenId): tokenId is string => typeof tokenId === "string" && /^\d+$/.test(tokenId))
+          .map((tokenId) => BigInt(tokenId));
+        const candidateTokenIds = [
+          ...new Set([
+            ...logs.map((log) => log.args.tokenId).filter((tokenId): tokenId is bigint => tokenId != null),
+            ...recoveredTokenIds,
+            ...backendTokenIds
+          ])
+        ];
 
         const ownedEntries = await Promise.all(
           candidateTokenIds.map(async (tokenId) => {
@@ -1046,7 +1199,8 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
                 item: galleryItemFromMetadata(tokenId, tokenUri, metadata)
               };
             } catch {
-              return null;
+              const fallbackItem = recoveredGalleryItems.find((item) => item.tokenId === tokenId.toString()) ?? null;
+              return fallbackItem ? { tokenId: tokenId.toString(), item: fallbackItem } : null;
             }
           })
         );
@@ -1066,7 +1220,7 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
     return () => {
       canceled = true;
     };
-  }, [publicClient, profile.collection, walletAddress]);
+  }, [publicClient, profile.collection, recoveredGalleryItems, walletAddress]);
 
   const ownedCollection = useMemo(() => {
     const merged = new Map<string, GalleryItem>();
@@ -1077,8 +1231,14 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
     for (const item of onchainGallery.items) {
       if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
     }
+    const recoveredItems = onchainGallery.checked
+      ? recoveredGalleryItems.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
+      : recoveredGalleryItems;
+    for (const item of recoveredItems) {
+      if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
+    }
     return [...merged.values()]
-  }, [onchainGallery, profile.collection]);
+  }, [onchainGallery, profile.collection, recoveredGalleryItems]);
 
   const collection = useMemo(() => {
     const rarityWeight: Record<Rarity, number> = { common: 1, rare: 2, epic: 3, legendary: 4 };
