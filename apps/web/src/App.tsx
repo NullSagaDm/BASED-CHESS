@@ -100,6 +100,15 @@ function metadataField(metadata: Record<string, unknown>, key: string) {
   if (properties && typeof properties === "object" && key in properties) {
     return (properties as Record<string, unknown>)[key];
   }
+  const attributes = metadata.attributes;
+  if (Array.isArray(attributes)) {
+    const attribute = attributes.find(
+      (item) => item && typeof item === "object" && (item as Record<string, unknown>).trait_type === key
+    );
+    if (attribute && typeof attribute === "object" && "value" in attribute) {
+      return (attribute as Record<string, unknown>).value;
+    }
+  }
   return undefined;
 }
 
@@ -1059,8 +1068,7 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
     };
   }, [publicClient, profile.collection, walletAddress]);
 
-  const collection = useMemo(() => {
-    const rarityWeight: Record<Rarity, number> = { common: 1, rare: 2, epic: 3, legendary: 4 };
+  const ownedCollection = useMemo(() => {
     const merged = new Map<string, GalleryItem>();
     const backendItems = onchainGallery.checked
       ? profile.collection.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
@@ -1070,6 +1078,11 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
       if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
     }
     return [...merged.values()]
+  }, [onchainGallery, profile.collection]);
+
+  const collection = useMemo(() => {
+    const rarityWeight: Record<Rarity, number> = { common: 1, rare: 2, epic: 3, legendary: 4 };
+    return ownedCollection
       .filter((item) => difficultyFilter === "all" || item.difficulty === difficultyFilter)
       .filter((item) => resultFilter === "all" || item.result === resultFilter)
       .sort((a, b) =>
@@ -1077,7 +1090,7 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
           ? new Date(b.mintedAt).getTime() - new Date(a.mintedAt).getTime()
           : rarityWeight[b.rarity] - rarityWeight[a.rarity]
       );
-  }, [difficultyFilter, onchainGallery, profile.collection, resultFilter, sort]);
+  }, [difficultyFilter, ownedCollection, resultFilter, sort]);
 
   return (
     <div className="screen">
@@ -1091,6 +1104,7 @@ function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAdd
           <Stat label="Wins" value={profile.wins} />
           <Stat label="Losses" value={profile.losses} />
           <Stat label="Draws" value={profile.draws} />
+          <Stat label="NFTs" value={ownedCollection.length} />
           <Stat label="Win rate" value={profile.totalGames ? `${Math.round((profile.wins / profile.totalGames) * 100)}%` : "0%"} />
           <Stat label="Streak" value={profile.bestStreak} />
         </div>
@@ -1273,7 +1287,7 @@ function App() {
       ) : tab === "leaderboards" ? (
         <LeaderboardsScreen season={me?.season ?? null} />
       ) : tab === "profile" && me ? (
-        <ProfileScreen profile={me.profile} walletAddress={address ?? me.user.address} />
+        <ProfileScreen profile={me.profile} walletAddress={me.user.address} />
       ) : me ? (
         <HomeScreen me={me} onStart={start} busy={busy} selectedDifficulty={selectedDifficulty} />
       ) : (

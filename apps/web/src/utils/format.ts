@@ -10,6 +10,13 @@ export function formatDuration(seconds: number | null | undefined) {
 }
 
 export function absoluteApiUrl(path: string) {
-  if (path.startsWith("http")) return path;
-  return `${import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787"}${path}`;
+  const apiUrl = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787";
+  if (path.startsWith("http")) {
+    const url = new URL(path);
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      return `${apiUrl}${url.pathname}${url.search}${url.hash}`;
+    }
+    return path;
+  }
+  return `${apiUrl}${path}`;
 }
