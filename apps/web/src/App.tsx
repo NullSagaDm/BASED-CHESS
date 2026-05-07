@@ -40,7 +40,7 @@ import {
   type Rarity
 } from "@based-chess/shared";
 import { api, setAuthToken } from "./api/client";
-import { chain } from "./config/wagmi";
+import { builderCodeDataSuffix, chain } from "./config/wagmi";
 import { env } from "./config/env";
 import type { Analysis, ApiGame, LeaderboardResponse, MeResponse, MintPreview, Profile } from "./types";
 import { absoluteApiUrl, compactAddress, formatDuration } from "./utils/format";
@@ -827,6 +827,7 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
         address: prepared.contractAddress,
         abi: resultNftAbi,
         functionName: "mintResult",
+        dataSuffix: builderCodeDataSuffix,
         args: [
           prepared.to,
           prepared.gameIdHash,
