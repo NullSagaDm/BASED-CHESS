@@ -80,6 +80,9 @@ const brandLogoSrc = "/brand/based-chess-logo.jpg";
 const zeroAddress = "0x0000000000000000000000000000000000000000";
 const recoveredGalleryStorageKey = "based-chess-recovered-nfts";
 const recoveredGalleryEvent = "based-chess:recovered-nft";
+const mintedGameStorageKey = "based-chess-minted-game-ids";
+const mintedGameEvent = "based-chess:minted-game";
+const emptyGalleryItems: GalleryItem[] = [];
 
 function isConfiguredAddress(value: string): value is Address {
   return /^0x[a-fA-F0-9]{40}$/.test(value) && value.toLowerCase() !== zeroAddress;
@@ -171,6 +174,26 @@ function rememberRecoveredGalleryItem(item: GalleryItem) {
   window.dispatchEvent(new Event(recoveredGalleryEvent));
 }
 
+function readMintedGameIds() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(mintedGameStorageKey) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function rememberMintedGameId(gameId: string) {
+  const gameIds = readMintedGameIds();
+  gameIds.add(gameId);
+  window.localStorage.setItem(mintedGameStorageKey, JSON.stringify([...gameIds]));
+  window.dispatchEvent(new Event(mintedGameEvent));
+}
+
+function isLocallyMintedGame(gameId: string) {
+  return readMintedGameIds().has(gameId) || readRecoveredGalleryItems().some((item) => item.gameId === gameId);
+}
+
 function galleryItemFromMintFallback(input: {
   game: ApiGame;
   preview: MintPreview | null;
@@ -220,6 +243,140 @@ function useDisplayedDuration(game: ApiGame) {
 
   if (game.durationSeconds !== null) return game.durationSeconds;
   return Math.max(0, Math.floor((now - new Date(game.startedAt).getTime()) / 1_000));
+}
+
+function useRecoveredGalleryItems() {
+  const [recoveredGalleryItems, setRecoveredGalleryItems] = useState<GalleryItem[]>(() => readRecoveredGalleryItems());
+
+  useEffect(() => {
+    const refreshRecoveredItems = () => setRecoveredGalleryItems(readRecoveredGalleryItems());
+    window.addEventListener(recoveredGalleryEvent, refreshRecoveredItems);
+    window.addEventListener("storage", refreshRecoveredItems);
+    return () => {
+      window.removeEventListener(recoveredGalleryEvent, refreshRecoveredItems);
+      window.removeEventListener("storage", refreshRecoveredItems);
+    };
+  }, []);
+
+  return recoveredGalleryItems;
+}
+
+function useOwnedNftCollection(profile: Profile | null, walletAddress: string | undefined) {
+  const publicClient = usePublicClient({ chainId: base.id });
+  const recoveredGalleryItems = useRecoveredGalleryItems();
+  const profileCollection = profile?.collection ?? emptyGalleryItems;
+  const [onchainGallery, setOnchainGallery] = useState<{
+    checked: boolean;
+    ownedTokenIds: Set<string>;
+    items: GalleryItem[];
+  }>({ checked: false, ownedTokenIds: new Set(), items: [] });
+
+  useEffect(() => {
+    let canceled = false;
+
+    async function loadOnchainGallery() {
+      if (!profile || !publicClient || !walletAddress || !isConfiguredAddress(env.resultNftContractAddress)) {
+        setOnchainGallery({ checked: false, ownedTokenIds: new Set(), items: [] });
+        return;
+      }
+
+      try {
+        const owner = getAddress(walletAddress as Address);
+        const contractAddress = getAddress(env.resultNftContractAddress);
+        let logs: Array<{ args: { tokenId?: bigint | null } }> = [];
+        try {
+          logs = await publicClient.getLogs({
+            address: contractAddress,
+            event: transferEvent,
+            args: { to: owner },
+            fromBlock: 0n,
+            toBlock: "latest"
+          });
+        } catch (event) {
+          console.warn("Onchain gallery Transfer log query failed; falling back to known token ownership checks", {
+            owner,
+            contractAddress,
+            error: event instanceof Error ? event.message : "Unknown log query error"
+          });
+        }
+        const recoveredTokenIds = recoveredGalleryItems
+          .map((item) => item.tokenId)
+          .filter((tokenId): tokenId is string => typeof tokenId === "string" && /^\d+$/.test(tokenId))
+          .map((tokenId) => BigInt(tokenId));
+        const backendTokenIds = profileCollection
+          .map((item) => item.tokenId)
+          .filter((tokenId): tokenId is string => typeof tokenId === "string" && /^\d+$/.test(tokenId))
+          .map((tokenId) => BigInt(tokenId));
+        const candidateTokenIds = [
+          ...new Set([
+            ...logs.map((log) => log.args.tokenId).filter((tokenId): tokenId is bigint => tokenId != null),
+            ...recoveredTokenIds,
+            ...backendTokenIds
+          ])
+        ];
+
+        const ownedEntries = await Promise.all(
+          candidateTokenIds.map(async (tokenId) => {
+            try {
+              const currentOwner = await publicClient.readContract({
+                address: contractAddress,
+                abi: erc721GalleryAbi,
+                functionName: "ownerOf",
+                args: [tokenId]
+              });
+              if (getAddress(currentOwner) !== owner) return null;
+              const tokenUri = await publicClient.readContract({
+                address: contractAddress,
+                abi: erc721GalleryAbi,
+                functionName: "tokenURI",
+                args: [tokenId]
+              });
+              const metadata = (await fetch(metadataUrl(tokenUri)).then((response) => response.json())) as Record<string, unknown>;
+              return {
+                tokenId: tokenId.toString(),
+                item: galleryItemFromMetadata(tokenId, tokenUri, metadata)
+              };
+            } catch {
+              const fallbackItem = recoveredGalleryItems.find((item) => item.tokenId === tokenId.toString()) ?? null;
+              return fallbackItem ? { tokenId: tokenId.toString(), item: fallbackItem } : null;
+            }
+          })
+        );
+
+        if (canceled) return;
+        setOnchainGallery({
+          checked: true,
+          ownedTokenIds: new Set(ownedEntries.flatMap((entry) => (entry ? [entry.tokenId] : []))),
+          items: ownedEntries.flatMap((entry) => (entry?.item ? [entry.item] : []))
+        });
+      } catch {
+        if (!canceled) setOnchainGallery({ checked: false, ownedTokenIds: new Set(), items: [] });
+      }
+    }
+
+    loadOnchainGallery();
+    return () => {
+      canceled = true;
+    };
+  }, [profile, profileCollection, publicClient, recoveredGalleryItems, walletAddress]);
+
+  return useMemo(() => {
+    const merged = new Map<string, GalleryItem>();
+    const backendItems = onchainGallery.checked
+      ? profileCollection.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
+      : profileCollection;
+    for (const item of backendItems) merged.set(galleryKey(item), item);
+    for (const item of onchainGallery.items) {
+      if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
+    }
+    const recoveredItems = onchainGallery.checked
+      ? recoveredGalleryItems.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
+      : recoveredGalleryItems;
+    for (const item of recoveredItems) {
+      if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
+    }
+    return [...merged.values()];
+  }, [onchainGallery, profileCollection, recoveredGalleryItems]);
 }
 
 function formatSeasonCountdown(endsAt: string, now: number) {
@@ -455,12 +612,14 @@ function HomeScreen({
   me,
   onStart,
   busy,
-  selectedDifficulty
+  selectedDifficulty,
+  ownedNftCount
 }: {
   me: MeResponse;
   onStart: (difficulty: Difficulty) => void;
   busy: boolean;
   selectedDifficulty: Difficulty | null;
+  ownedNftCount: number;
 }) {
   const [showTitleLadder, setShowTitleLadder] = useState(false);
 
@@ -503,7 +662,7 @@ function HomeScreen({
         <Stat label="Wins" value={me.profile.wins} />
         <Stat label="Losses" value={me.profile.losses} />
         <Stat label="Draws" value={me.profile.draws} />
-        <Stat label="NFTs" value={me.profile.mintedNfts} />
+        <Stat label="NFTs" value={ownedNftCount} />
       </section>
 
       <section className="surface">
@@ -858,6 +1017,7 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [mintSucceeded, setMintSucceeded] = useState(() => game.mint.minted || isLocallyMintedGame(game.id));
 
   useEffect(() => {
     api.mintPreview(game.id).then(setPreview).catch((event) => setError(event instanceof Error ? event.message : "Mint preview unavailable"));
@@ -869,7 +1029,21 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
     return () => window.clearTimeout(timeout);
   }, [successMessage]);
 
+  useEffect(() => {
+    const syncMintedState = () => setMintSucceeded(game.mint.minted || isLocallyMintedGame(game.id));
+    syncMintedState();
+    window.addEventListener(mintedGameEvent, syncMintedState);
+    window.addEventListener(recoveredGalleryEvent, syncMintedState);
+    window.addEventListener("storage", syncMintedState);
+    return () => {
+      window.removeEventListener(mintedGameEvent, syncMintedState);
+      window.removeEventListener(recoveredGalleryEvent, syncMintedState);
+      window.removeEventListener("storage", syncMintedState);
+    };
+  }, [game.id, game.mint.minted]);
+
   async function mint() {
+    if (mintSucceeded || game.mint.minted) return;
     setBusy(true);
     setError(null);
     setSuccessMessage(null);
@@ -977,6 +1151,8 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
         });
       }
 
+      rememberMintedGameId(game.id);
+      setMintSucceeded(true);
       await api.recordMint({ gameId: game.id, txHash: hash, tokenId }).catch((event) => {
         console.warn("Mint record sync is pending", event);
       });
@@ -1010,10 +1186,17 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
       ) : (
         <p className="muted">Loading preview...</p>
       )}
-      <button className="primary-button centered" disabled={busy || !preview} onClick={mint}>
-        <Gem size={18} />
-        {busy ? "Minting..." : "Confirm mint"}
-      </button>
+      {mintSucceeded || game.mint.minted ? (
+        <button className="primary-button centered" disabled>
+          <Check size={18} />
+          NFT minted
+        </button>
+      ) : (
+        <button className="primary-button centered" disabled={busy || !preview} onClick={mint}>
+          <Gem size={18} />
+          {busy ? "Minting..." : "Confirm mint"}
+        </button>
+      )}
       {successMessage ? (
         <button className="toast success-toast" type="button" onClick={() => setSuccessMessage(null)} aria-live="polite">
           {successMessage}
@@ -1111,134 +1294,10 @@ function Segmented<T extends string>({
   );
 }
 
-function ProfileScreen({ profile, walletAddress }: { profile: Profile; walletAddress: string | undefined }) {
-  const publicClient = usePublicClient({ chainId: base.id });
+function ProfileScreen({ profile, ownedCollection }: { profile: Profile; ownedCollection: GalleryItem[] }) {
   const [difficultyFilter, setDifficultyFilter] = useState<Difficulty | "all">("all");
   const [resultFilter, setResultFilter] = useState<GameResult | "all">("all");
   const [sort, setSort] = useState<"date" | "rarity">("date");
-  const [onchainGallery, setOnchainGallery] = useState<{
-    checked: boolean;
-    ownedTokenIds: Set<string>;
-    items: GalleryItem[];
-  }>({ checked: false, ownedTokenIds: new Set(), items: [] });
-  const [recoveredGalleryItems, setRecoveredGalleryItems] = useState<GalleryItem[]>(() => readRecoveredGalleryItems());
-
-  useEffect(() => {
-    const refreshRecoveredItems = () => setRecoveredGalleryItems(readRecoveredGalleryItems());
-    window.addEventListener(recoveredGalleryEvent, refreshRecoveredItems);
-    window.addEventListener("storage", refreshRecoveredItems);
-    return () => {
-      window.removeEventListener(recoveredGalleryEvent, refreshRecoveredItems);
-      window.removeEventListener("storage", refreshRecoveredItems);
-    };
-  }, []);
-
-  useEffect(() => {
-    let canceled = false;
-
-    async function loadOnchainGallery() {
-      if (!publicClient || !walletAddress || !isConfiguredAddress(env.resultNftContractAddress)) {
-        setOnchainGallery({ checked: false, ownedTokenIds: new Set(), items: [] });
-        return;
-      }
-
-      try {
-        const owner = getAddress(walletAddress as Address);
-        const contractAddress = getAddress(env.resultNftContractAddress);
-        let logs: Array<{ args: { tokenId?: bigint | null } }> = [];
-        try {
-          logs = await publicClient.getLogs({
-            address: contractAddress,
-            event: transferEvent,
-            args: { to: owner },
-            fromBlock: 0n,
-            toBlock: "latest"
-          });
-        } catch (event) {
-          console.warn("Onchain gallery Transfer log query failed; falling back to known token ownership checks", {
-            owner,
-            contractAddress,
-            error: event instanceof Error ? event.message : "Unknown log query error"
-          });
-        }
-        const recoveredTokenIds = recoveredGalleryItems
-          .map((item) => item.tokenId)
-          .filter((tokenId): tokenId is string => typeof tokenId === "string" && /^\d+$/.test(tokenId))
-          .map((tokenId) => BigInt(tokenId));
-        const backendTokenIds = profile.collection
-          .map((item) => item.tokenId)
-          .filter((tokenId): tokenId is string => typeof tokenId === "string" && /^\d+$/.test(tokenId))
-          .map((tokenId) => BigInt(tokenId));
-        const candidateTokenIds = [
-          ...new Set([
-            ...logs.map((log) => log.args.tokenId).filter((tokenId): tokenId is bigint => tokenId != null),
-            ...recoveredTokenIds,
-            ...backendTokenIds
-          ])
-        ];
-
-        const ownedEntries = await Promise.all(
-          candidateTokenIds.map(async (tokenId) => {
-            try {
-              const currentOwner = await publicClient.readContract({
-                address: contractAddress,
-                abi: erc721GalleryAbi,
-                functionName: "ownerOf",
-                args: [tokenId]
-              });
-              if (getAddress(currentOwner) !== owner) return null;
-              const tokenUri = await publicClient.readContract({
-                address: contractAddress,
-                abi: erc721GalleryAbi,
-                functionName: "tokenURI",
-                args: [tokenId]
-              });
-              const metadata = (await fetch(metadataUrl(tokenUri)).then((response) => response.json())) as Record<string, unknown>;
-              return {
-                tokenId: tokenId.toString(),
-                item: galleryItemFromMetadata(tokenId, tokenUri, metadata)
-              };
-            } catch {
-              const fallbackItem = recoveredGalleryItems.find((item) => item.tokenId === tokenId.toString()) ?? null;
-              return fallbackItem ? { tokenId: tokenId.toString(), item: fallbackItem } : null;
-            }
-          })
-        );
-
-        if (canceled) return;
-        setOnchainGallery({
-          checked: true,
-          ownedTokenIds: new Set(ownedEntries.flatMap((entry) => (entry ? [entry.tokenId] : []))),
-          items: ownedEntries.flatMap((entry) => (entry?.item ? [entry.item] : []))
-        });
-      } catch {
-        if (!canceled) setOnchainGallery({ checked: false, ownedTokenIds: new Set(), items: [] });
-      }
-    }
-
-    loadOnchainGallery();
-    return () => {
-      canceled = true;
-    };
-  }, [publicClient, profile.collection, recoveredGalleryItems, walletAddress]);
-
-  const ownedCollection = useMemo(() => {
-    const merged = new Map<string, GalleryItem>();
-    const backendItems = onchainGallery.checked
-      ? profile.collection.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
-      : profile.collection;
-    for (const item of backendItems) merged.set(galleryKey(item), item);
-    for (const item of onchainGallery.items) {
-      if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
-    }
-    const recoveredItems = onchainGallery.checked
-      ? recoveredGalleryItems.filter((item) => !item.tokenId || onchainGallery.ownedTokenIds.has(item.tokenId))
-      : recoveredGalleryItems;
-    for (const item of recoveredItems) {
-      if (!merged.has(galleryKey(item))) merged.set(galleryKey(item), item);
-    }
-    return [...merged.values()]
-  }, [onchainGallery, profile.collection, recoveredGalleryItems]);
 
   const collection = useMemo(() => {
     const rarityWeight: Record<Rarity, number> = { common: 1, rare: 2, epic: 3, legendary: 4 };
@@ -1371,6 +1430,8 @@ function App() {
     return () => window.clearTimeout(timeout);
   }, [error]);
 
+  const ownedNftCollection = useOwnedNftCollection(me?.profile ?? null, me?.user.address);
+
   async function start(difficulty: Difficulty) {
     setSelectedDifficulty(difficulty);
     setBusy(true);
@@ -1447,9 +1508,15 @@ function App() {
       ) : tab === "leaderboards" ? (
         <LeaderboardsScreen season={me?.season ?? null} />
       ) : tab === "profile" && me ? (
-        <ProfileScreen profile={me.profile} walletAddress={me.user.address} />
+        <ProfileScreen profile={me.profile} ownedCollection={ownedNftCollection} />
       ) : me ? (
-        <HomeScreen me={me} onStart={start} busy={busy} selectedDifficulty={selectedDifficulty} />
+        <HomeScreen
+          me={me}
+          onStart={start}
+          busy={busy}
+          selectedDifficulty={selectedDifficulty}
+          ownedNftCount={ownedNftCollection.length}
+        />
       ) : (
         <div className="screen">
           <p className="muted">Loading...</p>
