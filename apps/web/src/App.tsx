@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "r
 import { Chessboard } from "react-chessboard";
 import { Chess, type Square as ChessSquare } from "chess.js";
 import { createSiweMessage } from "viem/siwe";
-import { getAddress, parseAbi, parseAbiItem, parseEventLogs, type Address } from "viem";
+import { encodeFunctionData, getAddress, parseAbi, parseAbiItem, parseEventLogs, type Address } from "viem";
 import { base } from "viem/chains";
-import { useAccount, useConnect, useDisconnect, usePublicClient, useSignMessage, useWriteContract } from "wagmi";
+import { useAccount, useConnect, useDisconnect, usePublicClient, useSendTransaction, useSignMessage } from "wagmi";
 import {
   Award,
   BarChart3,
@@ -797,7 +797,7 @@ function ResultPanel({
 }
 
 function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) {
-  const { writeContractAsync } = useWriteContract();
+  const { sendTransactionAsync } = useSendTransaction();
   const publicClient = usePublicClient();
   const [preview, setPreview] = useState<MintPreview | null>(null);
   const [busy, setBusy] = useState(false);
@@ -823,22 +823,26 @@ function MintPanel({ game, onMinted }: { game: ApiGame; onMinted: () => void }) 
       if (/^0x0+$/.test(prepared.contractAddress)) {
         throw new Error("Deploy the NFT contract and set VITE_RESULT_NFT_CONTRACT_ADDRESS before minting.");
       }
-      const hash = await writeContractAsync({
-        address: prepared.contractAddress,
+      const mintResultArgs = [
+        prepared.to,
+        prepared.gameIdHash,
+        prepared.tokenUri,
+        {
+          ...prepared.data,
+          playedAt: BigInt(prepared.data.playedAt),
+          deadline: BigInt(prepared.data.deadline)
+        },
+        prepared.signature
+      ] as const;
+      const mintResultData = encodeFunctionData({
         abi: resultNftAbi,
         functionName: "mintResult",
-        dataSuffix: builderCodeDataSuffix,
-        args: [
-          prepared.to,
-          prepared.gameIdHash,
-          prepared.tokenUri,
-          {
-            ...prepared.data,
-            playedAt: BigInt(prepared.data.playedAt),
-            deadline: BigInt(prepared.data.deadline)
-          },
-          prepared.signature
-        ]
+        args: mintResultArgs
+      });
+      const attributedMintData = `${mintResultData}${builderCodeDataSuffix.slice(2)}` as `0x${string}`;
+      const hash = await sendTransactionAsync({
+        to: prepared.contractAddress,
+        data: attributedMintData
       });
       const receipt = publicClient ? await publicClient.waitForTransactionReceipt({ hash }) : null;
       const logs = receipt
